@@ -180,14 +180,16 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
         }
         if(_protectedBalances[recipient]>0){
             uint256 b1 = _protectedBalances[recipient];
-            uint256 b2 = amount.mul(currentPrice);
             uint256 t1 = _protectedDcas[recipient];
-            uint256 c1 = b1.div(t1);
-            uint256 dca1 = (b1+b2) / (c1+currentPrice);
-            _protectedBalances[recipient] = _protectedBalances[recipient].add(b2 / 1000000);
+            uint256 c1 = b1 / t1;
+            uint256 b2 = amount * currentPrice / 1_000_000;
+            uint256 t2 = currentPrice;
+            uint256 c2 = b2 / t2;
+            uint256 dca1 = (b1+b2) / (c1+c2);
+            _protectedBalances[recipient] = _protectedBalances[recipient].add(b2);
             _protectedDcas[recipient] = dca1;
         }else{
-            _protectedBalances[recipient] = amount * currentPrice / 1000000;
+            _protectedBalances[recipient] = amount * currentPrice / 1_000_000;
             _protectedDcas[recipient] = currentPrice;
         }
         emit protectedTransferEvent(recipient, amount, currentPrice);
@@ -382,12 +384,12 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
                 currentPrice = _protectedDcas[sender];
             }
             if (currentPrice > 0) {
-                uint256 protectedToDeduct = amount * currentPrice / 1000000;
+                uint256 protectedToDeduct = amount * currentPrice / 1_000_000;
                 if (protectedToDeduct > _protectedBalances[sender]) {
                     _protectedBalances[sender] = 0;
                     _protectedDcas[sender] = 0;
                 } else {
-                    _protectedBalances[sender] = _protectedBalances[sender].sub(amount * currentPrice / 1000000);
+                    _protectedBalances[sender] = _protectedBalances[sender].sub(amount * currentPrice / 1_000_000);
                 }
             }
         }
@@ -520,7 +522,7 @@ abstract contract Liquifier is Ownable, Manageable {
 
     function liquify(uint256 contractTokenBalance, address sender) internal {
 
-        uint256 contractTokenBalanceBUSD = contractTokenBalance * _getCurrentPrice() / 1000000000000;
+        uint256 contractTokenBalanceBUSD = ( contractTokenBalance / 1_000_000 ) * ( _getCurrentPrice() / 1_000_000 );
         bool isOverRequiredTokenBalance = ( contractTokenBalanceBUSD >= numberOfTokensToSwapToLiquidity );
 
         /**
@@ -680,7 +682,7 @@ abstract contract Token is BaseRfiToken, Liquifier {
             priceinBNBBUSD = reserve1BnbBusd/reserve0BnbBusd;
         }
 
-        return(priceinBNB * priceinBNBBUSD / 1000000);
+        return(priceinBNB * priceinBNBBUSD / 1_000_000);
     }
 
     function getPair() external view returns(address,uint256,uint256) {
