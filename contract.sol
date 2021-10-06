@@ -109,6 +109,8 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
     mapping (address => bool) internal _isExcludedFromRewards;
     address[] private _excluded;
 
+    mapping (uint256 => bool) internal _rewardJobs;
+
     uint256 holders = 1;
 
     constructor(){
@@ -223,6 +225,30 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
     }
     /** Functions required by NSUR - END **/
 
+    /** Functions for Claiming Rewards **/
+
+    function claimReward(uint256 rewardId, uint256 amount, bytes memory _signature) external returns (bool){
+        bytes32 message = keccak256(abi.encodePacked(rewardId, amount));
+        (uint8 v, bytes32 r, bytes32 s) = splitSignature(_signature);
+        require( owner() == ecrecover(message, v, r, s), "Message not signed by the owner or invalid values");
+        require( _rewardJobs[rewardId] != true, "Reward Already Claimed");
+        _rewardJobs[rewardId] = true;
+        _transfer(owner(), _msgSender(), amount);
+        return true;
+    }
+
+    function splitSignature(bytes memory sig) internal pure returns (uint8 v, bytes32 r, bytes32 s){
+        require(sig.length == 65);
+        assembly {
+            r := mload(add(sig, 32))
+            s := mload(add(sig, 64))
+            v := byte(0, mload(add(sig, 96)))
+        }
+    }
+
+    /** End Functions for Claiming Rewards **/
+
+
     function burn(uint256 amount) external {
 
         address sender = _msgSender();
@@ -244,8 +270,8 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
 
     function _burnTokens(address sender, uint256 tBurn, uint256 rBurn) internal {
 
-        /**
-         * @dev Do not reduce _totalSupply and/or _reflectedSupply. (soft) burning by sending
+    /**
+     * @dev Do not reduce _totalSupply and/or _reflectedSupply. (soft) burning by sending
          * tokens to the burn address (which should be excluded from rewards) is sufficient
          * in RFI
          */
