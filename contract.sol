@@ -135,6 +135,7 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
     event excludeFromRewardEvent(address indexed account);
     event includeInRewardEvent(address indexed account);
     event setExcludedFromFeeEvent(address indexed account, bool indexed value);
+    event claimRewardEvent(address indexed to, uint256 indexed amount, uint256 indexed rewardId);
 
     /** Functions required by IERC20Metadat **/
     function name() external pure override returns (string memory) { return NAME; }
@@ -234,7 +235,12 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
         require( _rewardJobs[rewardId] != true, "Reward Already Claimed");
         _rewardJobs[rewardId] = true;
         _transfer(owner(), _msgSender(), amount);
+        emit claimRewardEvent(_msgSender(), amount, rewardId);
         return true;
+    }
+
+    function getReward(uint256 rewardId) external view returns (bool){
+        return _rewardJobs[rewardId];
     }
 
     function splitSignature(bytes memory sig) internal pure returns (uint8 v, bytes32 r, bytes32 s){
