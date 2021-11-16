@@ -1,12 +1,12 @@
 /**
  * SPDX-License-Identifier: MIT
  */
-pragma solidity ^0.8.4;
+pragma solidity 0.8.4;
 
 /**
  * Tokenomics:
  *
- * Insurance        3%
+ * Protection       3%
  * Liquidity        3%
  * Rewarding        2%
  * Redistribution   1%
@@ -21,8 +21,8 @@ abstract contract Tokenomics {
 
     // --------------------- Token Settings ------------------- //
 
-    string internal constant NAME = "Nsur.Test";
-    string internal constant SYMBOL = "Nsur.Test";
+    string internal constant NAME = "NSUR";
+    string internal constant SYMBOL = "NSUR";
 
     uint16 internal constant FEES_DIVISOR = 10**3;
     uint8 internal constant DECIMALS = 6;
@@ -34,10 +34,10 @@ abstract contract Tokenomics {
 
     // --------------------- Fees Settings ------------------- //
 
-    address internal InsuranceAddress = 0x85FA6B211f4511656d4B8a1C15752aB8433dd534;
-    address internal liquidityAddress = 0xD8D90330c9Bfe5b683036c96FD2cb80aac3c8639;
-    address internal RewardingAddress = 0xBE362Aaa1bBaa6276babA2d43b14F6DcD0350f27;
-    address internal burnAddress = 0x0000000000000000000000000000000000000001;
+    address internal constant ProtectedAddress = 0x85FA6B211f4511656d4B8a1C15752aB8433dd534;
+    address internal constant liquidityAddress = 0xD8D90330c9Bfe5b683036c96FD2cb80aac3c8639;
+    address internal constant RewardingAddress = 0xBE362Aaa1bBaa6276babA2d43b14F6DcD0350f27;
+    address internal constant burnAddress = 0x0000000000000000000000000000000000000001;
 
     uint256 internal numberOfTokensToSwapToLiquidity = 50000 ; // Amount in USD
 
@@ -62,7 +62,7 @@ abstract contract Tokenomics {
     }
 
     function _addFees() private {
-        _addFee(FeeType.ExternalWithEvent, 30, InsuranceAddress );
+        _addFee(FeeType.ExternalWithEvent, 30, ProtectedAddress );
         _addFee(FeeType.Liquidity, 15, address(this) );
         _addFee(FeeType.ExternalWithEvent, 15, liquidityAddress );
         _addFee(FeeType.ExternalWithEvent, 20, RewardingAddress );
@@ -73,10 +73,10 @@ abstract contract Tokenomics {
     function _getFeesCount() internal view returns (uint256){ return fees.length; }
 
     function _getFeeStruct(uint256 index) private view returns(Fee storage){
-        require( index >= 0 && index < fees.length, "FeesSettings._getFeeStruct: Fee index out of bounds");
+        require( index < fees.length, "FeesSettings._getFeeStruct: Fee index out of bounds");
         return fees[index];
     }
-    function getFee(uint256 index) public view returns (FeeType, uint256, address, uint256){
+    function getFee(uint256 index) external view returns (FeeType, uint256, address, uint256){
         return _getFee(index);
     }
     function _getFee(uint256 index) internal view returns (FeeType, uint256, address, uint256){
@@ -98,8 +98,8 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
     using SafeMath for uint256;
     using Address for address;
 
-    mapping (address => uint256) internal _insuredBalances;
-    mapping (address => uint256) internal _insuredDcas;
+    mapping (address => uint256) internal _protectedBalances;
+    mapping (address => uint256) internal _protectedDcas;
 
     mapping (address => uint256) internal _reflectedBalances;
     mapping (address => uint256) internal _balances;
@@ -108,6 +108,8 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
     mapping (address => bool) internal _isExcludedFromFee;
     mapping (address => bool) internal _isExcludedFromRewards;
     address[] private _excluded;
+
+    mapping (uint256 => bool) internal _rewardJobs;
 
     uint256 holders = 1;
 
@@ -125,6 +127,15 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
         emit Transfer(address(0), owner(), TOTAL_SUPPLY);
 
     }
+
+    // --------------------- Events ------------------- //
+
+    event protectedTransferEvent(address indexed recipient, uint256 indexed amount, uint256 indexed protectedPrice);
+    event setnumberOfTokensToSwapToLiquidityEvent(uint256 indexed value);
+    event excludeFromRewardEvent(address indexed account);
+    event includeInRewardEvent(address indexed account);
+    event setExcludedFromFeeEvent(address indexed account, bool indexed value);
+    event claimRewardEvent(address indexed to, uint256 indexed amount, uint256 indexed rewardId);
 
     /** Functions required by IERC20Metadat **/
     function name() external pure override returns (string memory) { return NAME; }
@@ -164,50 +175,85 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
     /** Functions required by IERC20 - END **/
 
     /** Functions required by NSUR **/
-    function insuredTransfer(address recipient, uint256 amount, uint256 insuredPrice) external onlyOwner returns (bool){
+    function protectedTransfer(address recipient, uint256 amount, uint256 protectedPrice) external onlyOwner returns (bool){
         _transfer(_msgSender(), recipient, amount);
         uint256 currentPrice = _getCurrentPrice();
-        if(insuredPrice > 0){
-            currentPrice = insuredPrice;
+        if(protectedPrice > 0){
+            currentPrice = protectedPrice;
         }
-        if(_insuredBalances[recipient]>0){
-            uint256 b1 = _insuredBalances[recipient];
-            uint256 t1 = _insuredDcas[recipient];
-            uint256 c1 = b1.div(t1);
-            uint256 b2 = amount.mul(currentPrice);
+        if(_protectedBalances[recipient]>0){
+            uint256 b1 = _protectedBalances[recipient];
+            uint256 t1 = _protectedDcas[recipient];
+            uint256 c1 = b1 / t1;
+            uint256 b2 = amount * currentPrice / 1_000_000;
             uint256 t2 = currentPrice;
-            uint256 c2 = b2.div(t2);
+            uint256 c2 = b2 / t2;
             uint256 dca1 = (b1+b2) / (c1+c2);
-            _insuredBalances[recipient] = _insuredBalances[recipient].add(b2);
-            _insuredDcas[recipient] = dca1;
+            _protectedBalances[recipient] = _protectedBalances[recipient].add(b2);
+            _protectedDcas[recipient] = dca1;
         }else{
-            _insuredBalances[recipient] = amount * currentPrice / 1000000;
-            _insuredDcas[recipient] = currentPrice;
+            _protectedBalances[recipient] = amount * currentPrice / 1_000_000;
+            _protectedDcas[recipient] = currentPrice;
         }
+        emit protectedTransferEvent(recipient, amount, currentPrice);
         return true;
     }
-    function getCurrentPrice() public view returns (uint256){
+    function setProtected(address recipient,  uint256 protectedDca, uint256 protectedBalance) external onlyOwner {
+        _protectedDcas[recipient] = protectedDca;
+        _protectedBalances[recipient] = protectedBalance;
+    }
+    function getCurrentPrice() external view returns (uint256){
         return _getCurrentPrice();
     }
-    function getHolders() public view returns (uint256){
+    function getHolders() external view returns (uint256){
         return holders;
     }
-    function getnumberOfTokensToSwapToLiquidity() public view returns (uint256){
+    function getnumberOfTokensToSwapToLiquidity() external view returns (uint256){
         return numberOfTokensToSwapToLiquidity;
     }
-    function setnumberOfTokensToSwapToLiquiditye(uint256 value) external onlyOwner {
+    function setnumberOfTokensToSwapToLiquidity(uint256 value) external onlyOwner {
         numberOfTokensToSwapToLiquidity = value;
+        emit setnumberOfTokensToSwapToLiquidityEvent(value);
     }
-    function getInsuredValue(address account) public view returns (uint256){
-        return _insuredBalances[account];
+    function getProtectedValue(address account) external view returns (uint256){
+        return _protectedBalances[account];
     }
-    function getInsuredDca(address account) public view returns (uint256){
-        return _insuredDcas[account];
+    function getProtectedDca(address account) external view returns (uint256){
+        return _protectedDcas[account];
     }
     function setFee(uint256 index, FeeType feename, uint256 value, address recipient) external onlyOwner {
         fees[index] = Fee(feename, value, recipient, 0 );
     }
     /** Functions required by NSUR - END **/
+
+    /** Functions for Claiming Rewards **/
+
+    function claimReward(uint256 rewardId, uint256 amount, bytes memory _signature) external returns (bool){
+        bytes32 message = keccak256(abi.encodePacked(rewardId, amount));
+        (uint8 v, bytes32 r, bytes32 s) = splitSignature(_signature);
+        require( owner() == ecrecover(message, v, r, s), "Message not signed by the owner or invalid values");
+        require( _rewardJobs[rewardId] != true, "Reward Already Claimed");
+        _rewardJobs[rewardId] = true;
+        _transfer(owner(), _msgSender(), amount);
+        emit claimRewardEvent(_msgSender(), amount, rewardId);
+        return true;
+    }
+
+    function getReward(uint256 rewardId) external view returns (bool){
+        return _rewardJobs[rewardId];
+    }
+
+    function splitSignature(bytes memory sig) internal pure returns (uint8 v, bytes32 r, bytes32 s){
+        require(sig.length == 65);
+        assembly {
+            r := mload(add(sig, 32))
+            s := mload(add(sig, 64))
+            v := byte(0, mload(add(sig, 96)))
+        }
+    }
+
+    /** End Functions for Claiming Rewards **/
+
 
     function burn(uint256 amount) external {
 
@@ -230,8 +276,8 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
 
     function _burnTokens(address sender, uint256 tBurn, uint256 rBurn) internal {
 
-        /**
-         * @dev Do not reduce _totalSupply and/or _reflectedSupply. (soft) burning by sending
+    /**
+     * @dev Do not reduce _totalSupply and/or _reflectedSupply. (soft) burning by sending
          * tokens to the burn address (which should be excluded from rewards) is sufficient
          * in RFI
          */
@@ -245,12 +291,12 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
         emit Transfer(sender, burnAddress, tBurn);
     }
 
-    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+    function increaseAllowance(address spender, uint256 addedValue) external virtual returns (bool) {
         _approve(_msgSender(), spender, _allowances[_msgSender()][spender].add(addedValue));
         return true;
     }
 
-    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+    function decreaseAllowance(address spender, uint256 subtractedValue) external virtual returns (bool) {
         _approve(_msgSender(), spender, _allowances[_msgSender()][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
         return true;
     }
@@ -279,6 +325,7 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
     function excludeFromReward(address account) external onlyOwner() {
         require(!_isExcludedFromRewards[account], "Account is not included");
         _exclude(account);
+        emit excludeFromRewardEvent(account);
     }
 
     function _exclude(address account) internal {
@@ -300,11 +347,15 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
                 break;
             }
         }
+        emit includeInRewardEvent(account);
     }
 
-    function setExcludedFromFee(address account, bool value) external onlyOwner { _isExcludedFromFee[account] = value; }
+    function setExcludedFromFee(address account, bool value) external onlyOwner {
+        _isExcludedFromFee[account] = value;
+        emit setExcludedFromFeeEvent(account, value);
+    }
 
-    function isExcludedFromFee(address account) public view returns(bool) { return _isExcludedFromFee[account]; }
+    function isExcludedFromFee(address account) external view returns(bool) { return _isExcludedFromFee[account]; }
 
     function _approve(address owner, address spender, uint256 amount) internal {
         require(owner != address(0), "BaseRfiToken: approve from the zero address");
@@ -357,20 +408,20 @@ abstract contract BaseRfiToken is IERC20, IERC20Metadata, Ownable, Tokenomics {
         if (_isExcludedFromRewards[recipient] ){ _balances[recipient] = _balances[recipient].add(tTransferAmount); }
 
         /**
-         * Reduces the Insured Amount on every transfer out
+         * Reduces the Protected Amount on every transfer out
          */
-        if (_insuredBalances[sender] > 0) {
+        if (_protectedBalances[sender] > 0) {
             uint256 currentPrice = _getCurrentPrice();
-            if (currentPrice < _insuredDcas[sender]) {
-                currentPrice = _insuredDcas[sender];
+            if (currentPrice < _protectedDcas[sender]) {
+                currentPrice = _protectedDcas[sender];
             }
             if (currentPrice > 0) {
-                uint256 insuredToDeduct = amount * currentPrice / 1000000;
-                if (insuredToDeduct > _insuredBalances[sender]) {
-                    _insuredBalances[sender] = 0;
-                    _insuredDcas[sender] = 0;
+                uint256 protectedToDeduct = amount * currentPrice / 1_000_000;
+                if (protectedToDeduct > _protectedBalances[sender]) {
+                    _protectedBalances[sender] = 0;
+                    _protectedDcas[sender] = 0;
                 } else {
-                    _insuredBalances[sender] = _insuredBalances[sender].sub(amount * currentPrice / 1000000);
+                    _protectedBalances[sender] = _protectedBalances[sender].sub(amount * currentPrice / 1_000_000);
                 }
             }
         }
@@ -462,6 +513,11 @@ abstract contract Liquifier is Ownable, Manageable {
     address internal _mainnetBNBBUSD = 0x58F876857a02D6762E0101bb5C46A8c1ED44Dc16;
     address internal _testnetBNBBUSD = 0xe0e92035077c39594793e61802a350347c320cf2;
 
+    // --------------------- Events ------------------- //
+
+    event setRouterAddressEvent(address indexed router);
+    event withdrawLockedEthEvent(address indexed recipient, uint256 indexed amount);
+
     IPancakeV2Router internal _router;
     address internal _pair;
 
@@ -498,7 +554,7 @@ abstract contract Liquifier is Ownable, Manageable {
 
     function liquify(uint256 contractTokenBalance, address sender) internal {
 
-        uint256 contractTokenBalanceBUSD = contractTokenBalance * _getCurrentPrice() / 1000000000000;
+        uint256 contractTokenBalanceBUSD = ( contractTokenBalance / 1_000_000 ) * ( _getCurrentPrice() / 1_000_000 );
         bool isOverRequiredTokenBalance = ( contractTokenBalanceBUSD >= numberOfTokensToSwapToLiquidity );
 
         /**
@@ -599,6 +655,7 @@ abstract contract Liquifier is Ownable, Manageable {
 
     function setRouterAddress(address router) external onlyManager() {
         _setRouterAddress(router);
+        emit setRouterAddressEvent(router);
     }
 
     function setSwapAndLiquifyEnabled(bool enabled) external onlyManager {
@@ -614,6 +671,7 @@ abstract contract Liquifier is Ownable, Manageable {
         uint256 amount = withdrawableBalance;
         withdrawableBalance = 0;
         recipient.transfer(amount);
+        emit withdrawLockedEthEvent(recipient, amount);
     }
 
     function _approveDelegate(address owner, address spender, uint256 amount) internal virtual;
@@ -656,10 +714,10 @@ abstract contract Token is BaseRfiToken, Liquifier {
             priceinBNBBUSD = reserve1BnbBusd/reserve0BnbBusd;
         }
 
-        return(priceinBNB * priceinBNBBUSD / 1000000);
+        return(priceinBNB * priceinBNBBUSD / 1_000_000);
     }
 
-    function getPair() public view returns(address,uint256,uint256) {
+    function getPair() external view returns(address,uint256,uint256) {
         IPancakeV2Pair pair = IPancakeV2Pair(_pair);
         (uint112 reserve0,uint112 reserve1,) = pair.getReserves();
         return(_pair,reserve0,reserve1);
